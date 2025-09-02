@@ -1,0 +1,169 @@
+version: '3.8'
+services:
+  oracle-db:
+    image: gvenzl/oracle-xe:21-slim
+    environment:
+      - ORACLE_PASSWORD=Oradoc_db1
+      - APP_USER=APP
+      - APP_USER_PASSWORD=app_pwd
+    ports:
+      - "1521:1521"
+    volumes:
+      - ./oracle_data:/opt/oracle/oradata
+      - ./init:/docker-entrypoint-initdb.d  # Load SQL scripts
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    depends_on: [zookeeper]
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  # --- ETL SERVICES (chạy riêng biệt) ---
+  data-ingestion:
+    build: ./etl
+    command: python data_ingestion.py
+    volumes:
+      - ./data/historical:/data/historical
+    depends_on:
+      - oracle-db
+    environment:
+      - ORACLE_DSN=oracle-db:1521/XEPDB1
+      - ORACLE_USER=APP
+      - ORACLE_PWD=app_pwd
+
+  load-staging:
+    build: ./etl
+    command: python load_staging_to_oracle.py
+    volumes:
+      - ./data/historical:/data/historical
+    depends_on:
+      - oracle-db
+      - data-ingestion
+    environment:
+      - ORACLE_DSN=oracle-db:1521/XEPDB1
+      - ORACLE_USER=APP
+      - ORACLE_PWD=app_pwd
+
+  tick-replay:
+    build: ./etl
+    command: python tick_replay.py
+    depends_on:
+      - kafka
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+
+  outbox-publisher:
+    build: ./etl
+    command: python outbox_publisher.py
+    depends_on:
+      - kafka
+      - oracle-db
+    environment:
+      - ORACLE_DSN=oracle-db:1521/XEPDB1
+      - ORACLE_USER=APP
+      - ORACLE_PWD=app_pwd
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+
+  matching-consumer:
+    build: ./etl
+    command: python matching_consumer.py
+    depends_on:
+      - kafka
+      - oracle-db
+    environment:
+      - ORACLE_DSN=oracle-db:1521/XEPDB1
+      - ORACLE_USER=APP
+      - ORACLE_PWD=app_pwd
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+
+  analytics-consumer:
+    build: ./etl
+    command: python analytics_consumer.py
+    depends_on:
+      - kafka
+      - oracle-db
+    environment:
+      - ORACLE_DSN=oracle-db:1521/XEPDB1
+      - ORACLE_USER=APP
+      - ORACLE_PWD=app_pwd
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+
+  # --- ENGINE SERVICES ---
+  matching-engine:
+    build: ./engine
+    command: python matching_engine.py
+    depends_on:
+      - kafka
+      - oracle-db
+    environment:
+      - ORACLE_DSN=oracle-db:1521/XEPDB1
+      - ORACLE_USER=APP
+      - ORACLE_PWD=app_pwd
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+
+  risk-engine:
+    build: ./engine
+    command: python risk_engine.py
+    depends_on:
+      - kafka
+      - oracle-db
+    environment:
+      - ORACLE_DSN=oracle-db:1521/XEPDB1
+      - ORACLE_USER=APP
+      - ORACLE_PWD=app_pwd
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+
+  settlement-worker:
+    build: ./engine
+    command: python settlement_worker.py
+    depends_on:
+      - oracle-db
+    environment:
+      - ORACLE_DSN=oracle-db:1521/XEPDB1
+      - ORACLE_USER=APP
+      - ORACLE_PWD=app_pwd
+
+  # --- API SERVICE ---
+  api:
+    build: ./api
+    depends_on: [oracle-db, kafka]
+    environment:
+      - ORACLE_DSN=oracle-db:1521/XEPDB1
+      - ORACLE_USER=APP
+      - ORACLE_PWD=app_pwd
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    ports:
+      - "8080:8080"
+
+  # --- OTHER SERVICES ---
+  airflow:
+    image: apache/airflow:2.6.3
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+    depends_on: [oracle-db]
+
+  grafana:
+    image: grafana/grafana:9.5.5
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./dashboard:/var/lib/grafana/dashboards
+
+volumes:
+  oracle_data:
