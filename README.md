@@ -59,13 +59,3 @@ Place Order: POST /order {"customer_id":1001,"symbol":"AAPL","side":"BUY","quant
 Get Portfolio: GET /portfolio/1001 (Authorization: Bearer <token>)  
 Market Data: GET /market/aapl/history?period=1y, GET /market/aapl/ticks?from=2024-01-01
 
-## 🤝 Contributing
-Xem CONTRIBUTING.md để biết hướng dẫn đóng góp.
-
-## 📞 Support
-Issues: GitHub Issues  
-Email: support@trading-platform.com  
-Documentation: Wiki
-
-## 📄 License
-MIT License - xem LICENSE để biết chi tiết
